@@ -25,6 +25,11 @@ const userSchema = new mongoose.Schema({
     default: 0,
     min: 0
   },
+  wallet: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   gameCredits: {
     type: Map,
     of: Number,

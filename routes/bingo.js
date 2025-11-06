@@ -3,6 +3,7 @@ const router = express.Router();
 const { auth, adminAuth } = require('../middleware/auth');
 const BingoGameSession = require('../models/BingoGameSession');
 const Counter = require('../models/Counter');
+const WalletTransaction = require('../models/WalletTransaction');
 
 // Socket.io instance will be set from server.js
 let io;
@@ -62,8 +63,12 @@ router.post('/create', adminAuth, async (req, res) => {
     const gameIdNum = await Counter.getNextSequence('bingoGameId');
     const gameId = `BG${gameIdNum}`;
 
+    // Generate 4-digit PIN
+    const gamePin = Math.floor(1000 + Math.random() * 9000).toString();
+
     const game = new BingoGameSession({
       gameId,
+      gamePin,
       maxPlayers,
       winningPattern: winningPattern || 'any-line',
       autoCallInterval: autoCallInterval || 3000,
@@ -86,6 +91,7 @@ router.post('/create', adminAuth, async (req, res) => {
       game: {
         _id: game._id,
         gameId: game.gameId,
+        gamePin: game.gamePin,
         maxPlayers: game.maxPlayers,
         winningPattern: game.winningPattern,
         autoCallInterval: game.autoCallInterval,
@@ -318,6 +324,50 @@ router.post('/games/:gameId/call-number', adminAuth, async (req, res) => {
       game.status = 'completed';
       game.completedAt = new Date();
 
+      // Calculate and distribute winnings
+      const totalPot = game.players.length * game.playerEntryFee;
+      const profitAmount = (totalPot * game.profitPercentage) / 100;
+      const prizePool = totalPot - profitAmount;
+      const winningAmountPerWinner = prizePool / newWinners.length;
+
+      const User = require('../models/User');
+
+      // Add winnings to each winner's wallet
+      for (const winner of newWinners) {
+        const winnerUser = await User.findById(winner.player);
+        const balanceBefore = winnerUser.wallet;
+        winnerUser.wallet += winningAmountPerWinner;
+        await winnerUser.save();
+
+        // Record transaction
+        await WalletTransaction.create({
+          user: winner.player,
+          type: 'game_win',
+          amount: winningAmountPerWinner,
+          balanceBefore: balanceBefore,
+          balanceAfter: winnerUser.wallet,
+          gameId: game.gameId,
+          description: `Won game ${game.gameId} - Prize ${winningAmountPerWinner.toFixed(2)} Birr`
+        });
+      }
+
+      // Add profit to admin's wallet
+      const adminUser = await User.findById(game.createdBy);
+      const adminBalanceBefore = adminUser.wallet;
+      adminUser.wallet += profitAmount;
+      await adminUser.save();
+
+      // Record admin profit transaction
+      await WalletTransaction.create({
+        user: game.createdBy,
+        type: 'game_profit',
+        amount: profitAmount,
+        balanceBefore: adminBalanceBefore,
+        balanceAfter: adminUser.wallet,
+        gameId: game.gameId,
+        description: `Profit from game ${game.gameId} - ${profitAmount.toFixed(2)} Birr`
+      });
+
       // Stop auto-calling
       stopAutoCallNumbers(game.gameId);
     }
@@ -446,7 +496,6 @@ router.get('/games', auth, async (req, res) => {
     res.status(500).json({ error: 'Error fetching games' });
   }
 });
-
 /**
  * Get specific game details
  * GET /api/bingo/games/:gameId
@@ -494,10 +543,16 @@ router.get('/games/:gameId', auth, async (req, res) => {
  */
 router.post('/games/:gameId/join', auth, async (req, res) => {
   try {
+    const { pin } = req.body;
     const game = await BingoGameSession.findOne({ gameId: req.params.gameId });
 
     if (!game) {
       return res.status(404).json({ error: 'Game not found' });
+    }
+
+    // Verify PIN
+    if (!pin || pin.toString() !== game.gamePin) {
+      return res.status(403).json({ error: 'Invalid game PIN' });
     }
 
     if (game.status !== 'ready') {
@@ -511,6 +566,29 @@ router.post('/games/:gameId/join', auth, async (req, res) => {
     if (game.players.some(player => player.equals(req.user._id))) {
       return res.status(400).json({ error: 'Already joined this game' });
     }
+
+    // Check if player has enough wallet balance
+    if (req.user.wallet < game.playerEntryFee) {
+      return res.status(403).json({
+        error: `Insufficient wallet balance. Required: ${game.playerEntryFee}, Current balance: ${req.user.wallet}`
+      });
+    }
+
+    // Deduct entry fee from wallet
+    const balanceBefore = req.user.wallet;
+    req.user.wallet -= game.playerEntryFee;
+    await req.user.save();
+
+    // Record transaction
+    await WalletTransaction.create({
+      user: req.user._id,
+      type: 'game_join',
+      amount: -game.playerEntryFee,
+      balanceBefore: balanceBefore,
+      balanceAfter: req.user.wallet,
+      gameId: game.gameId,
+      description: `Joined game ${game.gameId} - Entry fee ${game.playerEntryFee} Birr`
+    });
 
     // Add player to game (but don't generate card yet)
     game.players.push(req.user._id);
@@ -662,6 +740,50 @@ router.post('/games/:gameId/mark-number', auth, async (req, res) => {
       newWinners.forEach(winner => game.winners.push(winner));
       game.status = 'completed';
       game.completedAt = new Date();
+
+      // Calculate and distribute winnings
+      const totalPot = game.players.length * game.playerEntryFee;
+      const profitAmount = (totalPot * game.profitPercentage) / 100;
+      const prizePool = totalPot - profitAmount;
+      const winningAmountPerWinner = prizePool / newWinners.length;
+
+      const User = require('../models/User');
+
+      // Add winnings to each winner's wallet
+      for (const winner of newWinners) {
+        const winnerUser = await User.findById(winner.player);
+        const balanceBefore = winnerUser.wallet;
+        winnerUser.wallet += winningAmountPerWinner;
+        await winnerUser.save();
+
+        // Record transaction
+        await WalletTransaction.create({
+          user: winner.player,
+          type: 'game_win',
+          amount: winningAmountPerWinner,
+          balanceBefore: balanceBefore,
+          balanceAfter: winnerUser.wallet,
+          gameId: game.gameId,
+          description: `Won game ${game.gameId} - Prize ${winningAmountPerWinner.toFixed(2)} Birr`
+        });
+      }
+
+      // Add profit to admin's wallet
+      const adminUser = await User.findById(game.createdBy);
+      const adminBalanceBefore = adminUser.wallet;
+      adminUser.wallet += profitAmount;
+      await adminUser.save();
+
+      // Record admin profit transaction
+      await WalletTransaction.create({
+        user: game.createdBy,
+        type: 'game_profit',
+        amount: profitAmount,
+        balanceBefore: adminBalanceBefore,
+        balanceAfter: adminUser.wallet,
+        gameId: game.gameId,
+        description: `Profit from game ${game.gameId} - ${profitAmount.toFixed(2)} Birr`
+      });
     }
 
     await game.save();
@@ -813,6 +935,51 @@ async function startAutoCallNumbers(gameId, interval) {
         newWinners.forEach(winner => game.winners.push(winner));
         game.status = 'completed';
         game.completedAt = new Date();
+
+        // Calculate and distribute winnings
+        const totalPot = game.players.length * game.playerEntryFee;
+        const profitAmount = (totalPot * game.profitPercentage) / 100;
+        const prizePool = totalPot - profitAmount;
+        const winningAmountPerWinner = prizePool / newWinners.length;
+
+        const User = require('../models/User');
+
+        // Add winnings to each winner's wallet
+        for (const winner of newWinners) {
+          const winnerUser = await User.findById(winner.player);
+          const balanceBefore = winnerUser.wallet;
+          winnerUser.wallet += winningAmountPerWinner;
+          await winnerUser.save();
+
+          // Record transaction
+          await WalletTransaction.create({
+            user: winner.player,
+            type: 'game_win',
+            amount: winningAmountPerWinner,
+            balanceBefore: balanceBefore,
+            balanceAfter: winnerUser.wallet,
+            gameId: game.gameId,
+            description: `Won game ${game.gameId} - Prize ${winningAmountPerWinner.toFixed(2)} Birr`
+          });
+        }
+
+        // Add profit to admin's wallet
+        const adminUser = await User.findById(game.createdBy);
+        const adminBalanceBefore = adminUser.wallet;
+        adminUser.wallet += profitAmount;
+        await adminUser.save();
+
+        // Record admin profit transaction
+        await WalletTransaction.create({
+          user: game.createdBy,
+          type: 'game_profit',
+          amount: profitAmount,
+          balanceBefore: adminBalanceBefore,
+          balanceAfter: adminUser.wallet,
+          gameId: game.gameId,
+          description: `Profit from game ${game.gameId} - ${profitAmount.toFixed(2)} Birr`
+        });
+
         stopAutoCallNumbers(gameId);
       }
 

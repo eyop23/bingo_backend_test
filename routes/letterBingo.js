@@ -61,7 +61,10 @@ router.post('/create', adminAuth, async (req, res) => {
 // Get all Letter Bingo games
 router.get('/games', auth, async (req, res) => {
   try {
-    const games = await LetterBingoGameSession.find()
+    // Admins can only see games they created, unless they are super admin
+    const query = req.user.isSuperAdmin ? {} : { createdBy: req.user._id };
+
+    const games = await LetterBingoGameSession.find(query)
       .populate('players', 'username')
       .populate('createdBy', 'username')
       .populate('winners', 'username')

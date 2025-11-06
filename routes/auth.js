@@ -3,6 +3,7 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
+const WalletTransaction = require('../models/WalletTransaction');
 const { auth } = require('../middleware/auth');
 
 // Register new user
@@ -38,6 +39,7 @@ router.post('/register', async (req, res) => {
         isAdmin: user.isAdmin || false,
         isSuperAdmin: user.isSuperAdmin || false,
         credits: user.credits || 0,
+        wallet: user.wallet || 0,
         gameCredits: gameCredits,
         email: user.email
       }
@@ -76,12 +78,39 @@ router.post('/login', async (req, res) => {
         isAdmin: user.isAdmin,
         isSuperAdmin: user.isSuperAdmin || false,
         credits: user.credits || 0,
+        wallet: user.wallet || 0,
         gameCredits: gameCredits,
         email: user.email
       }
     });
   } catch (error) {
     res.status(500).json({ error: 'Error logging in' });
+  }
+});
+
+// Get current user data
+router.get('/me', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Convert gameCredits Map to plain object
+    const gameCredits = user.gameCredits ? Object.fromEntries(user.gameCredits) : {};
+
+    res.json({
+      id: user._id,
+      username: user.username,
+      isAdmin: user.isAdmin,
+      isSuperAdmin: user.isSuperAdmin || false,
+      credits: user.credits || 0,
+      wallet: user.wallet || 0,
+      gameCredits: gameCredits,
+      email: user.email
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching user data' });
   }
 });
 
@@ -95,10 +124,34 @@ router.get('/users', auth, async (req, res) => {
 
     const users = await User.find({}, 'username isAdmin createdAt')
       .sort({ createdAt: -1 });
-    
+
     res.json(users);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching users' });
+  }
+});
+
+// Get current user's wallet history
+router.get('/my-wallet-history', auth, async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+
+    const transactions = await WalletTransaction.find({ user: req.userId })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .populate('performedBy', 'username')
+      .lean();
+
+    const user = await User.findById(req.userId).select('wallet username');
+
+    res.json({
+      currentWallet: user.wallet,
+      username: user.username,
+      transactions: transactions
+    });
+  } catch (error) {
+    console.error('Error fetching wallet history:', error);
+    res.status(500).json({ error: 'Error fetching wallet history' });
   }
 });
 

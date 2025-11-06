@@ -32,12 +32,16 @@ setLetterBingoIO(io);
 const { router: bingoRouter, setSocketIO: setBingoIO } = require('./routes/bingo');
 setBingoIO(io);
 
+// Import Admin Management routes and set Socket.io
+const { router: adminManagementRouter, setSocketIO: setAdminManagementIO } = require('./routes/adminManagement');
+setAdminManagementIO(io);
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/games', require('./routes/games'));
 app.use('/api/letter-bingo', letterBingoRouter);
 app.use('/api/bingo', bingoRouter);
-app.use('/api/admin-management', require('./routes/adminManagement'));
+app.use('/api/admin-management', adminManagementRouter);
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
@@ -65,7 +69,7 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
-const PORT = process.env.PORT || 2022;
+const PORT = process.env.PORT || 2023;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Server accessible at ${PORT}`);

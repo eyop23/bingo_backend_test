@@ -95,6 +95,11 @@ const bingoGameSessionSchema = new Schema({
     unique: true,
     required: true
   },
+  gamePin: {
+    type: String,
+    required: true,
+    length: 4
+  },
   gameType: {
     type: String,
     default: 'numberBingo',
